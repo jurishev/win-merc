@@ -1,4 +1,4 @@
-﻿/***************************************************************************
+/***************************************************************************
  *  Original Diku Mud copyright (C) 1990, 1991 by Sebastian Hammer,        *
  *  Michael Seifert, Hans Henrik St{rfeldt, Tom Madsen, and Katja Nyboe.   *
  *                                                                         *
@@ -15,768 +15,882 @@
  *  around, comes around.                                                  *
  ***************************************************************************/
 
-
 #include "merc.h"
 
+/* Array of containers read for proper re-nesting of objects. */
 
-// Array of containers read for proper re-nesting of objects.
+#define MAX_NEST 100
 
-#define MAX_NEST	100
+static OBJ_DATA *rgObjNest[MAX_NEST];
 
-static OBJ_DATA *rgObjNest[ MAX_NEST ];
+/* Local functions. */
 
+void fwrite_char(CHAR_DATA*, FILE*);
+void fwrite_obj(CHAR_DATA*, OBJ_DATA*, FILE*, int);
+void fread_char(CHAR_DATA*, FILE*);
+void fread_obj(CHAR_DATA*, FILE*);
 
-// Local functions.
+/* Courtesy of Yaz of 4th Realm */
 
-void fwrite_char( CHAR_DATA*, FILE* );
-void fwrite_obj( CHAR_DATA*, OBJ_DATA*, FILE*, int );
-void fread_char( CHAR_DATA*, FILE* );
-void fread_obj( CHAR_DATA*, FILE* );
-
-
-// Courtesy of Yaz of 4th Realm
-
-char *initial( const char *str ) {
-
-	static char strint[ MAX_STRING_LENGTH ];
-	strint[0] = LOWER( str[0] );
-	return strint;
+char *initial(const char *str)
+{
+    static char strint[MAX_STRING_LENGTH];
+    strint[0] = LOWER(str[0]);
+    return strint;
 }
 
+/// Save a character and inventory.
+/// Would be cool to save NPC's too for quest purposes,
+/// some of the infrastructure is provided.
+void save_char_obj(CHAR_DATA *ch)
+{
+    if (IS_NPC(ch) || ch->level < 2)
+    {
+        return;
+    }
 
-// Save a character and inventory.
-// Would be cool to save NPC's too for quest purposes,
-// some of the infrastructure is provided.
+    if (ch->desc != NULL && ch->desc->original != NULL)
+    {
+        ch = ch->desc->original;
+    }
 
-void save_char_obj( CHAR_DATA *ch ) {
+    ch->save_time = current_time;
 
-	if ( IS_NPC( ch ) || ch->level < 2 )
-		return;
+    char strsave[MAX_INPUT_LENGTH];
 
-	if ( ch->desc != NULL && ch->desc->original != NULL )
-		ch = ch->desc->original;
+    sprintf(strsave, "%s%s%s%s", PLAYER_DIR, initial(ch->name), "/", capitalize(ch->name));
 
-	ch->save_time = current_time;
+    FILE *fp;
 
-	char strsave[ MAX_INPUT_LENGTH ];
+    if ((fp = fopen(strsave, "w")) == NULL)
+    {
+        bug("Save_char_obj: fopen", 0);
+        perror(strsave);
+    }
+    else
+    {
+        fwrite_char(ch, fp);
 
-	sprintf( strsave, "%s%s%s%s", 
-		PLAYER_DIR, initial( ch->name ), "/", capitalize( ch->name ) );
+        if (ch->carrying != NULL)
+        {
+            fwrite_obj(ch, ch->carrying, fp, 0);
+        }
 
-	FILE *fp;
+        fprintf(fp, "#END\n");
+    }
 
-	if ( ( fp = fopen( strsave, "w" ) ) == NULL ) {
-		bug( "Save_char_obj: fopen", 0 );
-		perror( strsave );
-	} else {
-		fwrite_char( ch, fp );
-		if ( ch->carrying != NULL )
-			fwrite_obj( ch, ch->carrying, fp, 0 );
-		fprintf( fp, "#END\n" );
-	}
-
-	fclose( fp );
-	return;
+    fclose(fp);
+    return;
 }
 
+/// Write the char.
+void fwrite_char(CHAR_DATA *ch, FILE *fp)
+{
+    AFFECT_DATA *paf;
+    int sn;
 
-// Write the char.
+    fprintf(fp, "#%s\n", IS_NPC(ch) ? "MOB" : "PLAYER");
 
-void fwrite_char( CHAR_DATA *ch, FILE *fp ) {
+    fprintf(fp, "Name         %s~\n", ch->name);
+    fprintf(fp, "ShortDescr   %s~\n", ch->short_descr);
+    fprintf(fp, "LongDescr    %s~\n", ch->long_descr);
+    fprintf(fp, "Description  %s~\n", ch->description);
+    fprintf(fp, "Prompt       %s~\n", ch->prompt);
+    fprintf(fp, "Sex          %d\n", ch->sex);
+    fprintf(fp, "Class        %d\n", ch->class);
+    fprintf(fp, "Race         %d\n", ch->race);
+    fprintf(fp, "Level        %d\n", ch->level);
+    fprintf(fp, "Trust        %d\n", ch->trust);
+    fprintf(fp, "Wizbit       %d\n", ch->wizbit);
+    fprintf(fp, "Played       %d\n", ch->played + (int)(current_time - ch->logon));
+    fprintf(fp, "Note         %ld\n", ch->last_note);
+    fprintf(fp, "Room         %d\n", 
+        (ch->in_room == get_room_index(ROOM_VNUM_LIMBO) && ch->was_in_room != NULL) ? 
+        ch->was_in_room->vnum : ch->in_room->vnum);
 
-	AFFECT_DATA *paf;
-	int sn;
+    fprintf(fp, "HpManaMove   %d %d %d %d %d %d\n", 
+        ch->hit, ch->max_hit, ch->mana, ch->max_mana, ch->move, ch->max_move);
+    fprintf(fp, "Gold         %d\n", ch->gold);
+    fprintf(fp, "Exp          %d\n", ch->exp);
+    fprintf(fp, "Act          %d\n", ch->act);
+    fprintf(fp, "AffectedBy   %d\n", ch->affected_by);
 
-	fprintf( fp, "#%s\n", IS_NPC( ch ) ? "MOB" : "PLAYER" );
+    /* Bug fix from Alander */
 
-	fprintf( fp, "Name         %s~\n", ch->name );
-	fprintf( fp, "ShortDescr   %s~\n", ch->short_descr );
-	fprintf( fp, "LongDescr    %s~\n", ch->long_descr );
-	fprintf( fp, "Description  %s~\n", ch->description );
-	fprintf( fp, "Prompt       %s~\n", ch->prompt );
-	fprintf( fp, "Sex          %d\n", ch->sex );
-	fprintf( fp, "Class        %d\n", ch->class );
-	fprintf( fp, "Race         %d\n", ch->race );
-	fprintf( fp, "Level        %d\n", ch->level );
-	fprintf( fp, "Trust        %d\n", ch->trust );
-	fprintf( fp, "Wizbit       %d\n", ch->wizbit );
-	fprintf( fp, "Played       %d\n", ch->played + ( int )( current_time - ch->logon ) );
-	fprintf( fp, "Note         %ld\n", ch->last_note );
-	fprintf( fp, "Room         %d\n", 
-		( ch->in_room == get_room_index( ROOM_VNUM_LIMBO ) && ch->was_in_room != NULL ) ? 
-		ch->was_in_room->vnum : ch->in_room->vnum );
+    fprintf(fp, "Position     %d\n", 
+        ch->position == POS_FIGHTING ? POS_STANDING : ch->position);
 
-	fprintf( fp, "HpManaMove   %d %d %d %d %d %d\n", 
-		ch->hit, ch->max_hit, ch->mana, ch->max_mana, ch->move, ch->max_move );
-	fprintf( fp, "Gold         %d\n", ch->gold );
-	fprintf( fp, "Exp          %d\n", ch->exp );
-	fprintf( fp, "Act          %d\n", ch->act );
-	fprintf( fp, "AffectedBy   %d\n", ch->affected_by );
+    fprintf(fp, "Practice     %d\n", ch->practice);
+    fprintf(fp, "SavingThrow  %d\n", ch->saving_throw);
+    fprintf(fp, "Alignment    %d\n", ch->alignment);
+    fprintf(fp, "Hitroll      %d\n", ch->hitroll);
+    fprintf(fp, "Damroll      %d\n", ch->damroll);
+    fprintf(fp, "Armor        %d\n", ch->armor);
+    fprintf(fp, "Wimpy        %d\n", ch->wimpy);
+    fprintf(fp, "Deaf         %d\n", ch->deaf);
 
-	// Bug fix from Alander 
+    if (IS_NPC(ch))
+    {
+        fprintf(fp, "Vnum         %d\n", ch->pIndexData->vnum);
+    }
+    else
+    {
+        fprintf(fp, "Password     %s~\n", ch->pcdata->pwd);
+        fprintf(fp, "Bamfin       %s~\n", ch->pcdata->bamfin);
+        fprintf(fp, "Bamfout      %s~\n", ch->pcdata->bamfout);
+        fprintf(fp, "Title        %s~\n", ch->pcdata->title);
+        fprintf(fp, "AttrPerm     %d %d %d %d %d\n", ch->pcdata->perm_str, 
+            ch->pcdata->perm_int, ch->pcdata->perm_wis, 
+            ch->pcdata->perm_dex, ch->pcdata->perm_con);
 
-	fprintf( fp, "Position     %d\n", 
-		ch->position == POS_FIGHTING ? POS_STANDING : ch->position );
+        fprintf(fp, "AttrMod      %d %d %d %d %d\n", ch->pcdata->mod_str, 
+            ch->pcdata->mod_int, ch->pcdata->mod_wis, 
+            ch->pcdata->mod_dex, ch->pcdata->mod_con);
 
-	fprintf( fp, "Practice     %d\n", ch->practice );
-	fprintf( fp, "SavingThrow  %d\n", ch->saving_throw );
-	fprintf( fp, "Alignment    %d\n", ch->alignment );
-	fprintf( fp, "Hitroll      %d\n", ch->hitroll );
-	fprintf( fp, "Damroll      %d\n", ch->damroll );
-	fprintf( fp, "Armor        %d\n", ch->armor );
-	fprintf( fp, "Wimpy        %d\n", ch->wimpy );
-	fprintf( fp, "Deaf         %d\n", ch->deaf );
+        fprintf(fp, "Condition    %d %d %d\n", 
+            ch->pcdata->condition[0], ch->pcdata->condition[1], ch->pcdata->condition[2]);
 
-	if ( IS_NPC( ch ) )
-		fprintf( fp, "Vnum         %d\n", ch->pIndexData->vnum );
-	else {
-		fprintf( fp, "Password     %s~\n", ch->pcdata->pwd );
-		fprintf( fp, "Bamfin       %s~\n", ch->pcdata->bamfin );
-		fprintf( fp, "Bamfout      %s~\n", ch->pcdata->bamfout );
-		fprintf( fp, "Title        %s~\n", ch->pcdata->title );
-		fprintf( fp, "AttrPerm     %d %d %d %d %d\n", ch->pcdata->perm_str, 
-			ch->pcdata->perm_int, ch->pcdata->perm_wis, 
-			ch->pcdata->perm_dex, ch->pcdata->perm_con );
+        fprintf(fp, "Pagelen      %d\n", ch->pcdata->pagelen);
 
-		fprintf( fp, "AttrMod      %d %d %d %d %d\n", ch->pcdata->mod_str, 
-			ch->pcdata->mod_int, ch->pcdata->mod_wis, 
-			ch->pcdata->mod_dex, ch->pcdata->mod_con );
+        for (sn = 0; sn < MAX_SKILL; sn++)
+        {
+            if (skill_table[sn].name != NULL && ch->pcdata->learned[sn] > 0)
+            {
+                fprintf(fp, "Skill        %d '%s'\n", 
+                    ch->pcdata->learned[sn], skill_table[sn].name);
+            }
+        }
+    }
 
-		fprintf( fp, "Condition    %d %d %d\n", 
-			ch->pcdata->condition[0], ch->pcdata->condition[1], ch->pcdata->condition[2] );
+    for (paf = ch->affected; paf != NULL; paf = paf->next)
+    {
+        fprintf(fp, "Affect %3d %3d %3d %3d %10d\n", 
+            paf->type, paf->duration, paf->modifier, paf->location, paf->bitvector);
+    }
 
-		fprintf( fp, "Pagelen      %d\n", ch->pcdata->pagelen );
-
-		for ( sn = 0; sn < MAX_SKILL; sn++ )
-			if ( skill_table[ sn ].name != NULL && ch->pcdata->learned[ sn ] > 0 )
-				fprintf( fp, "Skill        %d '%s'\n", 
-					ch->pcdata->learned[ sn ], skill_table[ sn ].name );
-	}
-
-	for ( paf = ch->affected; paf != NULL; paf = paf->next )
-		fprintf( fp, "Affect %3d %3d %3d %3d %10d\n", 
-			paf->type, paf->duration, paf->modifier, paf->location, paf->bitvector );
-
-	fprintf( fp, "End\n\n" );
-	return;
+    fprintf(fp, "End\n\n");
+    return;
 }
 
+/// Write an object and its contents.
+void fwrite_obj(CHAR_DATA *ch, OBJ_DATA *obj, FILE *fp, int iNest)
+{
+    EXTRA_DESCR_DATA *ed;
+    AFFECT_DATA *paf;
 
-// Write an object and its contents.
+    /* Slick recursion to write lists backwards,
+    so loading them will load in forwards order. */
 
-void fwrite_obj( CHAR_DATA *ch, OBJ_DATA *obj, FILE *fp, int iNest ) {
+    if (obj->next_content != NULL)
+    {
+        fwrite_obj(ch, obj->next_content, fp, iNest);
+    }
 
-	EXTRA_DESCR_DATA *ed;
-	AFFECT_DATA *paf;
+    /* Castrate storage characters. */
 
-	// Slick recursion to write lists backwards,
-	// so loading them will load in forwards order.
+    if (ch->level < obj->level || obj->item_type == ITEM_KEY || obj->item_type == ITEM_POTION)
+    {
+        return;
+    }
 
-	if ( obj->next_content != NULL )
-		fwrite_obj( ch, obj->next_content, fp, iNest );
+    fprintf(fp, "#OBJECT\n");
+    fprintf(fp, "Nest         %d\n", iNest);
+    fprintf(fp, "Name         %s~\n", obj->name);
+    fprintf(fp, "ShortDescr   %s~\n", obj->short_descr);
+    fprintf(fp, "Description  %s~\n", obj->description);
+    fprintf(fp, "Vnum         %d\n", obj->pIndexData->vnum);
+    fprintf(fp, "ExtraFlags   %d\n", obj->extra_flags);
+    fprintf(fp, "WearFlags    %d\n", obj->wear_flags);
+    fprintf(fp, "WearLoc      %d\n", obj->wear_loc);
+    fprintf(fp, "ItemType     %d\n", obj->item_type);
+    fprintf(fp, "Weight       %d\n", obj->weight);
+    fprintf(fp, "Level        %d\n", obj->level);
+    fprintf(fp, "Timer        %d\n", obj->timer);
+    fprintf(fp, "Cost         %d\n", obj->cost);
+    fprintf(fp, "Values       %d %d %d %d\n", 
+        obj->value[0], obj->value[1], obj->value[2], obj->value[3]);
 
-	// Castrate storage characters.
+    switch (obj->item_type)
+    {
+        case ITEM_POTION:
+        case ITEM_SCROLL:
 
-	if ( ch->level < obj->level || obj->item_type == ITEM_KEY || obj->item_type == ITEM_POTION )
-		return;
+            if (obj->value[1] > 0)
+            {
+                fprintf(fp, "Spell 1      '%s'\n", skill_table[obj->value[1]].name);
+            }
 
-	fprintf( fp, "#OBJECT\n" );
-	fprintf( fp, "Nest         %d\n", iNest );
-	fprintf( fp, "Name         %s~\n", obj->name );
-	fprintf( fp, "ShortDescr   %s~\n", obj->short_descr );
-	fprintf( fp, "Description  %s~\n", obj->description );
-	fprintf( fp, "Vnum         %d\n", obj->pIndexData->vnum );
-	fprintf( fp, "ExtraFlags   %d\n", obj->extra_flags );
-	fprintf( fp, "WearFlags    %d\n", obj->wear_flags );
-	fprintf( fp, "WearLoc      %d\n", obj->wear_loc );
-	fprintf( fp, "ItemType     %d\n", obj->item_type );
-	fprintf( fp, "Weight       %d\n", obj->weight );
-	fprintf( fp, "Level        %d\n", obj->level );
-	fprintf( fp, "Timer        %d\n", obj->timer );
-	fprintf( fp, "Cost         %d\n", obj->cost );
-	fprintf( fp, "Values       %d %d %d %d\n", 
-		obj->value[0], obj->value[1], obj->value[2], obj->value[3] );
+            if (obj->value[2] > 0)
+            {
+                fprintf(fp, "Spell 2      '%s'\n", skill_table[obj->value[2]].name);
+            }
 
-	switch ( obj->item_type ) {
+            if (obj->value[3] > 0)
+            {
+                fprintf(fp, "Spell 3      '%s'\n", skill_table[obj->value[3]].name);
+            }
 
-		case ITEM_POTION:
-		case ITEM_SCROLL:
+            break;
 
-			if ( obj->value[1] > 0 )
-				fprintf( fp, "Spell 1      '%s'\n", skill_table[ obj->value[1] ].name );
+        case ITEM_PILL:
+        case ITEM_STAFF:
+        case ITEM_WAND:
 
-			if ( obj->value[2] > 0 )
-				fprintf( fp, "Spell 2      '%s'\n", skill_table[ obj->value[2] ].name );
+            if (obj->value[3] > 0)
+            {
+                fprintf(fp, "Spell 3      '%s'\n", skill_table[obj->value[3]].name);
+            }
 
-			if ( obj->value[3] > 0 )
-				fprintf( fp, "Spell 3      '%s'\n", skill_table[ obj->value[3] ].name );
+            break;
+    }
 
-			break;
+    for (paf = obj->affected; paf != NULL; paf = paf->next)
+    {
+        fprintf(fp, "Affect       %d %d %d %d %d\n", 
+            paf->type, paf->duration, paf->modifier, paf->location, paf->bitvector);
+    }
 
-		case ITEM_PILL:
-		case ITEM_STAFF:
-		case ITEM_WAND:
+    for (ed = obj->extra_descr; ed != NULL; ed = ed->next)
+    {
+        fprintf(fp, "ExtraDescr   %s~ %s~\n", ed->keyword, ed->description);
+    }
 
-			if ( obj->value[3] > 0 )
-				fprintf( fp, "Spell 3      '%s'\n", skill_table[ obj->value[3] ].name );
+    fprintf(fp, "End\n\n");
 
-			break;
-	}
+    if (obj->contains != NULL)
+    {
+        fwrite_obj(ch, obj->contains, fp, iNest + 1);
+    }
 
-	for ( paf = obj->affected; paf != NULL; paf = paf->next )
-		fprintf( fp, "Affect       %d %d %d %d %d\n", 
-		paf->type, paf->duration, paf->modifier, paf->location, paf->bitvector );
-
-	for ( ed = obj->extra_descr; ed != NULL; ed = ed->next )
-		fprintf( fp, "ExtraDescr   %s~ %s~\n", ed->keyword, ed->description );
-
-	fprintf( fp, "End\n\n" );
-
-	if ( obj->contains != NULL )
-		fwrite_obj( ch, obj->contains, fp, iNest + 1 );
-
-	return;
+    return;
 }
 
+/// Load a char and inventory into a new ch structure.
+bool load_char_obj(DESCRIPTOR_DATA *d, char *name)
+{
+    static PC_DATA pcdata_zero;
+    char strsave[MAX_INPUT_LENGTH];
+    char buf[MAX_STRING_LENGTH];
+    CHAR_DATA *ch;
+    FILE *fp;
+    bool found;
 
-// Load a char and inventory into a new ch structure.
+    if (char_free == NULL)
+    {
+        ch = alloc_perm(sizeof(*ch));
+    }
+    else
+    {
+        ch = char_free;
+        char_free = char_free->next;
+    }
 
-bool load_char_obj( DESCRIPTOR_DATA * d, char *name ) {
+    clear_char(ch);
 
-	static PC_DATA pcdata_zero;
-	char strsave[ MAX_INPUT_LENGTH ];
-	char buf[ MAX_STRING_LENGTH ];
-	CHAR_DATA *ch;
-	FILE *fp;
-	bool found;
+    if (pcdata_free == NULL)
+    {
+        ch->pcdata = alloc_perm(sizeof(*ch->pcdata));
+    }
+    else
+    {
+        ch->pcdata = pcdata_free;
+        pcdata_free = pcdata_free->next;
+    }
 
-	if ( char_free == NULL )
-		ch = alloc_perm( sizeof( *ch ) );
-	else {
-		ch = char_free;
-		char_free = char_free->next;
-	}
+    *ch->pcdata = pcdata_zero;
 
-	clear_char( ch );
+    d->character = ch;
+    ch->desc = d;
+    ch->name = str_dup(name);
+    ch->prompt = str_dup("<%hhp %mm %vmv> ");
+    ch->last_note = 0;
+    ch->act = PLR_BLANK | PLR_COMBINE | PLR_PROMPT;
+    ch->pcdata->pwd = str_dup("");
+    ch->pcdata->bamfin = str_dup("");
+    ch->pcdata->bamfout = str_dup("");
+    ch->pcdata->title = str_dup("");
+    ch->pcdata->perm_str = 13;
+    ch->pcdata->perm_int = 13;
+    ch->pcdata->perm_wis = 13;
+    ch->pcdata->perm_dex = 13;
+    ch->pcdata->perm_con = 13;
+    ch->pcdata->condition[COND_THIRST] = 48;
+    ch->pcdata->pagelen = 20;
+    ch->pcdata->condition[COND_FULL] = 48;
 
-	if ( pcdata_free == NULL )
-		ch->pcdata = alloc_perm( sizeof( *ch->pcdata ) );
-	else {
-		ch->pcdata = pcdata_free;
-		pcdata_free = pcdata_free->next;
-	}
+    found = false;
 
-	*ch->pcdata = pcdata_zero;
+    sprintf(strsave, "%s%s%s%s", PLAYER_DIR, initial(ch->name), "/", capitalize(name));
 
-	d->character = ch;
-	ch->desc = d;
-	ch->name = str_dup( name );
-	ch->prompt = str_dup( "<%hhp %mm %vmv> " );
-	ch->last_note = 0;
-	ch->act = PLR_BLANK | PLR_COMBINE | PLR_PROMPT;
-	ch->pcdata->pwd = str_dup( "" );
-	ch->pcdata->bamfin = str_dup( "" );
-	ch->pcdata->bamfout = str_dup( "" );
-	ch->pcdata->title = str_dup( "" );
-	ch->pcdata->perm_str = 13;
-	ch->pcdata->perm_int = 13;
-	ch->pcdata->perm_wis = 13;
-	ch->pcdata->perm_dex = 13;
-	ch->pcdata->perm_con = 13;
-	ch->pcdata->condition[ COND_THIRST ] = 48;
-	ch->pcdata->pagelen = 20;
-	ch->pcdata->condition[ COND_FULL ] = 48;
+    if ((fp = fopen(strsave, "r")) != NULL)
+    {
+        int iNest;
 
-	found = false;
+        for (iNest = 0; iNest < MAX_NEST; iNest++)
+        {
+            rgObjNest[iNest] = NULL;
+        }
 
-	sprintf( strsave, "%s%s%s%s", 
-		PLAYER_DIR, initial( ch->name ), "/", capitalize( name ) );
+        found = true;
 
-	if ( ( fp = fopen( strsave, "r" ) ) != NULL ) {
+        while (1)
+        {
+            char letter;
+            char *word;
 
-		int iNest;
+            letter = fread_letter(fp);
 
-		for ( iNest = 0; iNest < MAX_NEST; iNest++ )
-			rgObjNest[ iNest ] = NULL;
+            if (letter == '*')
+            {
+                fread_to_eol(fp);
+                continue;
+            }
 
-		found = true;
+            if (letter != '#')
+            {
+                bug("Load_char_obj: # not found.", 0);
+                break;
+            }
 
-		while (1) {
+            word = fread_word(fp);
 
-			char letter;
-			char *word;
+            if (!str_cmp(word, "PLAYER"))
+            {
+                fread_char(ch, fp);
+            }
+            else if (!str_cmp(word, "OBJECT"))
+            {
+                fread_obj(ch, fp);
+            }
+            else if (!str_cmp(word, "END"))
+            {
+                break;
+            }
+            else
+            {
+                bug("Load_char_obj: bad section.", 0);
+                break;
+            }
+        }
 
-			letter = fread_letter( fp );
+        fclose(fp);
+    }
 
-			if ( letter == '*' ) {
-				fread_to_eol( fp );
-				continue;
-			}
-
-			if ( letter != '#' ) {
-				bug( "Load_char_obj: # not found.", 0 );
-				break;
-			}
-
-			word = fread_word( fp );
-
-			if ( !str_cmp( word, "PLAYER" ) )
-				fread_char( ch, fp );
-			else if ( !str_cmp( word, "OBJECT" ) )
-				fread_obj( ch, fp );
-			else if ( !str_cmp( word, "END" ) )
-				break;
-			else {
-				bug( "Load_char_obj: bad section.", 0 );
-				break;
-			}
-		}
-
-		fclose( fp );
-	}
-
-	return found;
+    return found;
 }
-
-
-// Read in a char.
-
 
 #if defined(KEY)
 #undef KEY
 #endif
 
+#define KEY(literal, field, value)  \
+    if (!str_cmp(word, literal))    \
+    {                               \
+        field  = value;             \
+        fMatch = true;              \
+        break;                      \
+    }
 
-#define KEY( literal, field, value )	\
-	if ( !str_cmp( word, literal ) ) {	\
-		field  = value;					\
-		fMatch = true;					\
-		break;							\
-	}
+/// Read in a char.
+void fread_char(CHAR_DATA *ch, FILE *fp)
+{
+    char buf[MAX_STRING_LENGTH];
+    char *word;
+    bool fMatch;
 
+    while (1)
+    {
+        word = feof(fp) ? "End" : fread_word(fp);
+        fMatch = false;
 
-void fread_char( CHAR_DATA *ch, FILE *fp ) {
+        switch (UPPER(word[0]))
+        {
+            case '*':
+                fMatch = true;
+                fread_to_eol(fp);
+                break;
 
-	char buf[ MAX_STRING_LENGTH ];
-	char *word;
-	bool fMatch;
+            case 'A':
+                KEY("Act", ch->act, fread_number(fp));
+                KEY("AffectedBy", ch->affected_by, fread_number(fp));
+                KEY("Alignment", ch->alignment, fread_number(fp));
+                KEY("Armor", ch->armor, fread_number(fp));
 
-	while (1) {
+                if (!str_cmp(word, "Affect"))
+                {
+                    AFFECT_DATA *paf;
 
-		word = feof( fp ) ? "End" : fread_word( fp );
-		fMatch = false;
+                    if (affect_free == NULL)
+                    {
+                        paf = alloc_perm(sizeof(*paf));
+                    }
+                    else
+                    {
+                        paf = affect_free;
+                        affect_free = affect_free->next;
+                    }
 
-		switch ( UPPER( word[0] ) ) {
+                    paf->type = fread_number(fp);
+                    paf->duration = fread_number(fp);
+                    paf->modifier = fread_number(fp);
+                    paf->location = fread_number(fp);
+                    paf->bitvector = fread_number(fp);
+                    paf->next = ch->affected;
+                    ch->affected = paf;
 
-			case '*':
-				fMatch = true;
-				fread_to_eol( fp );
-				break;
+                    fMatch = true;
+                    break;
+                }
 
-			case 'A':
-				KEY( "Act", ch->act, fread_number( fp ) );
-				KEY( "AffectedBy", ch->affected_by, fread_number( fp ) );
-				KEY( "Alignment", ch->alignment, fread_number( fp ) );
-				KEY( "Armor", ch->armor, fread_number( fp ) );
+                if (!str_cmp(word, "AttrMod"))
+                {
+                    ch->pcdata->mod_str = fread_number(fp);
+                    ch->pcdata->mod_int = fread_number(fp);
+                    ch->pcdata->mod_wis = fread_number(fp);
+                    ch->pcdata->mod_dex = fread_number(fp);
+                    ch->pcdata->mod_con = fread_number(fp);
+                    fMatch = true;
+                    break;
+                }
 
-				if ( !str_cmp( word, "Affect" ) ) {
+                if (!str_cmp(word, "AttrPerm"))
+                {
+                    ch->pcdata->perm_str = fread_number(fp);
+                    ch->pcdata->perm_int = fread_number(fp);
+                    ch->pcdata->perm_wis = fread_number(fp);
+                    ch->pcdata->perm_dex = fread_number(fp);
+                    ch->pcdata->perm_con = fread_number(fp);
+                    fMatch = true;
+                    break;
+                }
 
-					AFFECT_DATA *paf;
+                break;
 
-					if ( affect_free == NULL )
-						paf = alloc_perm( sizeof( *paf ) );
-					else {
-						paf = affect_free;
-						affect_free = affect_free->next;
-					}
+            case 'B':
+                KEY("Bamfin", ch->pcdata->bamfin, fread_string(fp));
+                KEY("Bamfout", ch->pcdata->bamfout, fread_string(fp));
+                break;
 
-					paf->type = fread_number( fp );
-					paf->duration = fread_number( fp );
-					paf->modifier = fread_number( fp );
-					paf->location = fread_number( fp );
-					paf->bitvector = fread_number( fp );
-					paf->next = ch->affected;
-					ch->affected = paf;
+            case 'C':
+                KEY("Class", ch->class, fread_number(fp));
 
-					fMatch = true;
-					break;
-				}
+                if (!str_cmp(word, "Condition"))
+                {
+                    ch->pcdata->condition[0] = fread_number(fp);
+                    ch->pcdata->condition[1] = fread_number(fp);
+                    ch->pcdata->condition[2] = fread_number(fp);
+                    fMatch = true;
+                    break;
+                }
 
-				if ( !str_cmp( word, "AttrMod" ) ) {
-					ch->pcdata->mod_str = fread_number( fp );
-					ch->pcdata->mod_int = fread_number( fp );
-					ch->pcdata->mod_wis = fread_number( fp );
-					ch->pcdata->mod_dex = fread_number( fp );
-					ch->pcdata->mod_con = fread_number( fp );
-					fMatch = true;
-					break;
-				}
+                break;
 
-				if ( !str_cmp( word, "AttrPerm" ) ) {
-					ch->pcdata->perm_str = fread_number( fp );
-					ch->pcdata->perm_int = fread_number( fp );
-					ch->pcdata->perm_wis = fread_number( fp );
-					ch->pcdata->perm_dex = fread_number( fp );
-					ch->pcdata->perm_con = fread_number( fp );
-					fMatch = true;
-					break;
-				}
-				break;
+            case 'D':
+                KEY("Damroll", ch->damroll, fread_number(fp));
+                KEY("Deaf", ch->deaf, fread_number(fp));
+                KEY("Description", ch->description, fread_string(fp));
+                break;
 
-			case 'B':
-				KEY( "Bamfin", ch->pcdata->bamfin, fread_string( fp ) );
-				KEY( "Bamfout", ch->pcdata->bamfout, fread_string( fp ) );
-				break;
+            case 'E':
+                if (!str_cmp(word, "End"))
+                {
+                    return;
+                }
 
-			case 'C':
-				KEY( "Class", ch->class, fread_number( fp ) );
+                KEY("Exp", ch->exp, fread_number(fp));
+                break;
 
-				if ( !str_cmp( word, "Condition" ) ) {
-					ch->pcdata->condition[0] = fread_number( fp );
-					ch->pcdata->condition[1] = fread_number( fp );
-					ch->pcdata->condition[2] = fread_number( fp );
-					fMatch = true;
-					break;
-				}
-				break;
+            case 'G':
+                KEY("Gold", ch->gold, fread_number(fp));
+                break;
 
-			case 'D':
-				KEY( "Damroll", ch->damroll, fread_number( fp ) );
-				KEY( "Deaf", ch->deaf, fread_number( fp ) );
-				KEY( "Description", ch->description, fread_string( fp ) );
-				break;
+            case 'H':
+                KEY("Hitroll", ch->hitroll, fread_number(fp));
 
-			case 'E':
-				if ( !str_cmp( word, "End" ) )
-					return;
-				KEY( "Exp", ch->exp, fread_number( fp ) );
-				break;
+                if (!str_cmp(word, "HpManaMove"))
+                {
+                    ch->hit = fread_number(fp);
+                    ch->max_hit = fread_number(fp);
+                    ch->mana = fread_number(fp);
+                    ch->max_mana = fread_number(fp);
+                    ch->move = fread_number(fp);
+                    ch->max_move = fread_number(fp);
+                    fMatch = true;
+                    break;
+                }
 
-			case 'G':
-				KEY( "Gold", ch->gold, fread_number( fp ) );
-				break;
+                break;
 
-			case 'H':
-				KEY( "Hitroll", ch->hitroll, fread_number( fp ) );
+            case 'I':
 
-				if ( !str_cmp( word, "HpManaMove" ) ) {
-					ch->hit = fread_number( fp );
-					ch->max_hit = fread_number( fp );
-					ch->mana = fread_number( fp );
-					ch->max_mana = fread_number( fp );
-					ch->move = fread_number( fp );
-					ch->max_move = fread_number( fp );
-					fMatch = true;
-					break;
-				}
-				break;
+            case 'L':
+                KEY("Level", ch->level, fread_number(fp));
+                KEY("LongDescr", ch->long_descr, fread_string(fp));
+                break;
 
-			case 'I':
+            case 'N':
+                if (!str_cmp(word, "Name"))
+                {
+                    /* Name already set externally. */
 
+                    fread_to_eol(fp);
+                    fMatch = true;
+                    break;
+                }
 
-			case 'L':
-				KEY( "Level", ch->level, fread_number( fp ) );
-				KEY( "LongDescr", ch->long_descr, fread_string( fp ) );
-				break;
+                KEY("Note", ch->last_note, fread_number(fp));
+                break;
 
-			case 'N':
-				if ( !str_cmp( word, "Name" ) ) {
+            case 'P':
+                KEY("Pagelen", ch->pcdata->pagelen, fread_number(fp));
+                KEY("Password", ch->pcdata->pwd, fread_string(fp));
+                KEY("Played", ch->played, fread_number(fp));
+                KEY("Position", ch->position, fread_number(fp));
+                KEY("Practice", ch->practice, fread_number(fp));
+                KEY("Prompt", ch->prompt, fread_string(fp));
+                break;
 
-					// Name already set externally.
+            case 'R':
+                KEY("Race", ch->race, fread_number(fp));
 
-					fread_to_eol( fp );
-					fMatch = true;
-					break;
-				}
-				KEY( "Note", ch->last_note, fread_number( fp ) );
-				break;
+                if (!str_cmp(word, "Room"))
+                {
+                    ch->in_room = get_room_index(fread_number(fp));
 
-			case 'P':
-				KEY( "Pagelen", ch->pcdata->pagelen, fread_number( fp ) );
-				KEY( "Password", ch->pcdata->pwd, fread_string( fp ) );
-				KEY( "Played", ch->played, fread_number( fp ) );
-				KEY( "Position", ch->position, fread_number( fp ) );
-				KEY( "Practice", ch->practice, fread_number( fp ) );
-				KEY( "Prompt", ch->prompt, fread_string( fp ) );
-				break;
+                    if (ch->in_room == NULL)
+                    {
+                        ch->in_room = get_room_index(ROOM_VNUM_LIMBO);
+                    }
 
-			case 'R':
-				KEY( "Race", ch->race, fread_number( fp ) );
+                    fMatch = true;
+                    break;
+                }
 
-				if ( !str_cmp( word, "Room" ) ) {
-					ch->in_room = get_room_index( fread_number( fp ) );
-					if( ch->in_room == NULL )
-						ch->in_room = get_room_index( ROOM_VNUM_LIMBO );
-					fMatch = true;
-					break;
-				}
+                break;
 
-				break;
+            case 'S':
+                KEY("SavingThrow", ch->saving_throw, fread_number(fp));
+                KEY("Sex", ch->sex, fread_number(fp));
+                KEY("ShortDescr", ch->short_descr, fread_string(fp));
 
-			case 'S':
-				KEY( "SavingThrow", ch->saving_throw, fread_number( fp ) );
-				KEY( "Sex", ch->sex, fread_number( fp ) );
-				KEY( "ShortDescr", ch->short_descr, fread_string( fp ) );
+                if (!str_cmp(word, "Skill"))
+                {
+                    int sn;
+                    int value;
 
-				if ( !str_cmp( word, "Skill" ) ) {
-					int sn;
-					int value;
+                    value = fread_number(fp);
+                    sn = skill_lookup(fread_word(fp));
 
-					value = fread_number( fp );
-					sn = skill_lookup( fread_word( fp ) );
-					if( sn < 0 )
-						bug( "Fread_char: unknown skill.", 0 );
-					else
-						ch->pcdata->learned[ sn ] = value;
-					fMatch = true;
-				}
+                    if (sn < 0)
+                    {
+                        bug("Fread_char: unknown skill.", 0);
+                    }
+                    else
+                    {
+                        ch->pcdata->learned[sn] = value;
+                    }
 
-				break;
+                    fMatch = true;
+                }
 
-			case 'T':
-				KEY( "Trust", ch->trust, fread_number( fp ) );
+                break;
 
-				if ( !str_cmp( word, "Title" ) ) {
-					ch->pcdata->title = fread_string( fp );
+            case 'T':
+                KEY("Trust", ch->trust, fread_number(fp));
 
-					if ( isalpha( ch->pcdata->title[0] ) 
-						|| isdigit( ch->pcdata->title[0] ) ) {
-						
-						sprintf( buf, " %s", ch->pcdata->title );
-						free_string( ch->pcdata->title );
-						ch->pcdata->title = str_dup( buf );
-					}
-					fMatch = true;
-					break;
-				}
+                if (!str_cmp(word, "Title"))
+                {
+                    ch->pcdata->title = fread_string(fp);
 
-				break;
+                    if (isalpha(ch->pcdata->title[0]) || isdigit(ch->pcdata->title[0]))
+                    {
+                        sprintf(buf, " %s", ch->pcdata->title);
+                        free_string(ch->pcdata->title);
+                        ch->pcdata->title = str_dup(buf);
+                    }
 
-			case 'V':
-				if ( !str_cmp( word, "Vnum" ) ) {
-					ch->pIndexData = get_mob_index( fread_number( fp ) );
-					fMatch = true;
-					break;
-				}
-				break;
+                    fMatch = true;
+                    break;
+                }
 
-			case 'W':
-				KEY( "Wimpy", ch->wimpy, fread_number( fp ) );
-				KEY( "Wizbit", ch->wizbit, fread_number( fp ) );
-				break;
-		}
+                break;
 
-		// Make sure old chars have this field - Kahn 
+            case 'V':
+                if (!str_cmp(word, "Vnum"))
+                {
+                    ch->pIndexData = get_mob_index(fread_number(fp));
+                    fMatch = true;
+                    break;
+                }
 
-		if ( !ch->pcdata->pagelen )
-			ch->pcdata->pagelen = 20;
-		if ( !ch->prompt || ch->prompt == '\0' )
-			ch->prompt = "<%h %m %mv> ";
+                break;
 
-		if ( !fMatch ) {
-			bug( "Fread_char: no match.", 0 );
-			fread_to_eol( fp );
-		}
-	}
+            case 'W':
+                KEY("Wimpy", ch->wimpy, fread_number(fp));
+                KEY("Wizbit", ch->wizbit, fread_number(fp));
+                break;
+        }
+
+        /* Make sure old chars have this field - Kahn  */
+
+        if (!ch->pcdata->pagelen)
+        {
+            ch->pcdata->pagelen = 20;
+        }
+
+        if (!ch->prompt || ch->prompt == '\0')
+        {
+            ch->prompt = "<%h %m %mv> ";
+        }
+
+        if (!fMatch)
+        {
+            bug("Fread_char: no match.", 0);
+            fread_to_eol(fp);
+        }
+    }
 }
 
+void fread_obj(CHAR_DATA *ch, FILE *fp)
+{
+    static OBJ_DATA obj_zero;
+    OBJ_DATA *obj;
+    char *word;
+    int iNest;
+    bool fMatch;
+    bool fNest;
+    bool fVnum;
 
+    if (obj_free == NULL)
+    {
+        obj = alloc_perm(sizeof(*obj));
+    }
+    else
+    {
+        obj = obj_free;
+        obj_free = obj_free->next;
+    }
 
-void fread_obj( CHAR_DATA *ch, FILE *fp ) {
+    *obj = obj_zero;
+    obj->name = str_dup("");
+    obj->short_descr = str_dup("");
+    obj->description = str_dup("");
 
-	static OBJ_DATA obj_zero;
-	OBJ_DATA *obj;
-	char *word;
-	int iNest;
-	bool fMatch;
-	bool fNest;
-	bool fVnum;
+    fNest = false;
+    fVnum = true;
+    iNest = 0;
 
-	if ( obj_free == NULL )
-		obj = alloc_perm( sizeof( *obj ) );
-	else {
-		obj = obj_free;
-		obj_free = obj_free->next;
-	}
+    while (1)
+    {
+        word = feof(fp) ? "End" : fread_word(fp);
+        fMatch = false;
 
-	*obj = obj_zero;
-	obj->name = str_dup( "" );
-	obj->short_descr = str_dup( "" );
-	obj->description = str_dup( "" );
+        switch (UPPER(word[0]))
+        {
+            case '*':
+                fMatch = TRUE;
+                fread_to_eol(fp);
+                break;
 
-	fNest = false;
-	fVnum = true;
-	iNest = 0;
+            case 'A':
+                if (!str_cmp(word, "Affect"))
+                {
+                    AFFECT_DATA *paf;
 
-	while (1) {
+                    if (affect_free == NULL)
+                    {
+                        paf = alloc_perm(sizeof(*paf));
+                    }
+                    else
+                    {
+                        paf = affect_free;
+                        affect_free = affect_free->next;
+                    }
 
-		word = feof( fp ) ? "End" : fread_word( fp );
-		fMatch = false;
+                    paf->type = fread_number(fp);
+                    paf->duration = fread_number(fp);
+                    paf->modifier = fread_number(fp);
+                    paf->location = fread_number(fp);
+                    paf->bitvector = fread_number(fp);
+                    paf->next = obj->affected;
+                    obj->affected = paf;
+                    fMatch = true;
+                    break;
+                }
 
-		switch ( UPPER( word[0] ) ) {
-			case '*':
-				fMatch = TRUE;
-				fread_to_eol( fp );
-				break;
+                break;
 
-			case 'A':
-				if ( !str_cmp( word, "Affect" ) ) {
+            case 'C':
+                KEY("Cost", obj->cost, fread_number(fp));
+                break;
 
-					AFFECT_DATA *paf;
+            case 'D':
+                KEY("Description", obj->description, fread_string(fp));
+                break;
 
-					if ( affect_free == NULL )
-						paf = alloc_perm( sizeof( *paf ) );
-					else {
-						paf = affect_free;
-						affect_free = affect_free->next;
-					}
+            case 'E':
+                KEY("ExtraFlags", obj->extra_flags, fread_number(fp));
 
-					paf->type = fread_number( fp );
-					paf->duration = fread_number( fp );
-					paf->modifier = fread_number( fp );
-					paf->location = fread_number( fp );
-					paf->bitvector = fread_number( fp );
-					paf->next = obj->affected;
-					obj->affected = paf;
-					fMatch = true;
-					break;
-				}
-				break;
+                if (!str_cmp(word, "ExtraDescr"))
+                {
+                    EXTRA_DESCR_DATA *ed;
 
-			case 'C':
-				KEY( "Cost", obj->cost, fread_number( fp ) );
-				break;
+                    if (extra_descr_free == NULL)
+                    {
+                        ed = alloc_perm(sizeof(*ed));
+                    }
+                    else
+                    {
+                        ed = extra_descr_free;
+                        extra_descr_free = extra_descr_free->next;
+                    }
 
-			case 'D':
-				KEY( "Description", obj->description, fread_string( fp ) );
-				break;
+                    ed->keyword = fread_string(fp);
+                    ed->description = fread_string(fp);
+                    ed->next = obj->extra_descr;
+                    obj->extra_descr = ed;
+                    fMatch = true;
+                }
 
-			case 'E':
-				KEY( "ExtraFlags", obj->extra_flags, fread_number( fp ) );
+                if (!str_cmp(word, "End"))
+                {
+                    if (!fNest || !fVnum)
+                    {
+                        bug("Fread_obj: incomplete object.", 0);
+                        free_string(obj->name);
+                        free_string(obj->description);
+                        free_string(obj->short_descr);
+                        obj->next = obj_free;
+                        obj_free = obj;
+                        return;
+                    }
+                    else
+                    {
+                        obj->next = object_list;
+                        object_list = obj;
+                        obj->pIndexData->count++;
 
-				if ( !str_cmp( word, "ExtraDescr" ) ) {
+                        if (iNest == 0 || rgObjNest[iNest] == NULL)
+                        {
+                            obj_to_char(obj, ch);
+                        }
+                        else
+                        {
+                            obj_to_obj(obj, rgObjNest[iNest - 1]);
+                        }
 
-					EXTRA_DESCR_DATA *ed;
+                        return;
+                    }
+                }
 
-					if ( extra_descr_free == NULL )
-						ed = alloc_perm( sizeof( *ed ) );
-					else {
-						ed = extra_descr_free;
-						extra_descr_free = extra_descr_free->next;
-					}
+                break;
 
-					ed->keyword = fread_string( fp );
-					ed->description = fread_string( fp );
-					ed->next = obj->extra_descr;
-					obj->extra_descr = ed;
-					fMatch = true;
-				}
+            case 'I':
+                KEY("ItemType", obj->item_type, fread_number(fp));
+                break;
 
-				if ( !str_cmp( word, "End" ) ) {
-					if ( !fNest || !fVnum ) {
-						bug( "Fread_obj: incomplete object.", 0 );
-						free_string( obj->name );
-						free_string( obj->description );
-						free_string( obj->short_descr );
-						obj->next = obj_free;
-						obj_free = obj;
-						return;
-					} else {
-						obj->next = object_list;
-						object_list = obj;
-						obj->pIndexData->count++;
-						if ( iNest == 0 || rgObjNest[iNest] == NULL )
-							obj_to_char( obj, ch );
-						else
-							obj_to_obj( obj, rgObjNest[iNest - 1] );
-						return;
-					}
-				}
-				break;
+            case 'L':
+                KEY("Level", obj->level, fread_number(fp));
+                break;
 
-			case 'I':
-				KEY( "ItemType", obj->item_type, fread_number( fp ) );
-				break;
+            case 'N':
+                KEY("Name", obj->name, fread_string(fp));
 
-			case 'L':
-				KEY( "Level", obj->level, fread_number( fp ) );
-				break;
+                if (!str_cmp(word, "Nest"))
+                {
+                    iNest = fread_number(fp);
 
-			case 'N':
-				KEY( "Name", obj->name, fread_string( fp ) );
+                    if (iNest < 0 || iNest >= MAX_NEST)
+                    {
+                        bug("Fread_obj: bad nest %d.", iNest);
+                    }
+                    else
+                    {
+                        rgObjNest[iNest] = obj;
+                        fNest = true;
+                    }
 
-				if ( !str_cmp( word, "Nest" ) ) {
-					iNest = fread_number( fp );
-					if( iNest < 0 || iNest >= MAX_NEST )
-						bug( "Fread_obj: bad nest %d.", iNest );
-					else {
-						rgObjNest[iNest] = obj;
-						fNest = true;
-					}
-					fMatch = true;
-				}
-				break;
+                    fMatch = true;
+                }
 
-			case 'S':
-				KEY( "ShortDescr", obj->short_descr, fread_string( fp ) );
+                break;
 
-				if ( !str_cmp( word, "Spell" ) ) {
+            case 'S':
+                KEY("ShortDescr", obj->short_descr, fread_string(fp));
 
-					int iValue;
-					int sn;
+                if (!str_cmp(word, "Spell"))
+                {
+                    int iValue;
+                    int sn;
 
-					iValue = fread_number( fp );
-					sn = skill_lookup( fread_word( fp ) );
-					if( iValue < 0 || iValue > 3 )
-						bug( "Fread_obj: bad iValue %d.", iValue );
-					else if( sn < 0 )
-						bug( "Fread_obj: unknown skill.", 0 );
-					else
-						obj->value[iValue] = sn;
-					fMatch = true;
-					break;
-				}
+                    iValue = fread_number(fp);
+                    sn = skill_lookup(fread_word(fp));
 
-				break;
+                    if (iValue < 0 || iValue > 3)
+                    {
+                        bug("Fread_obj: bad iValue %d.", iValue);
+                    }
+                    else if (sn < 0)
+                    {
+                        bug("Fread_obj: unknown skill.", 0);
+                    }
+                    else
+                    {
+                        obj->value[iValue] = sn;
+                    }
 
-			case 'T':
-				KEY( "Timer", obj->timer, fread_number( fp ) );
-				break;
+                    fMatch = true;
+                    break;
+                }
 
-			case 'V':
-				if ( !str_cmp( word, "Values" ) ) {
-					obj->value[0] = fread_number( fp );
-					obj->value[1] = fread_number( fp );
-					obj->value[2] = fread_number( fp );
-					obj->value[3] = fread_number( fp );
-					fMatch = true;
-					break;
-				}
+                break;
 
-				if ( !str_cmp( word, "Vnum" ) ) {
-					int vnum;
+            case 'T':
+                KEY("Timer", obj->timer, fread_number(fp));
+                break;
 
-					vnum = fread_number( fp );
-					if ( ( obj->pIndexData = get_obj_index( vnum ) ) == NULL )
-						bug( "Fread_obj: bad vnum %d.", vnum );
-					else
-						fVnum = true;
-					fMatch = true;
-					break;
-				}
-				break;
+            case 'V':
+                if (!str_cmp(word, "Values"))
+                {
+                    obj->value[0] = fread_number(fp);
+                    obj->value[1] = fread_number(fp);
+                    obj->value[2] = fread_number(fp);
+                    obj->value[3] = fread_number(fp);
+                    fMatch = true;
+                    break;
+                }
 
-			case 'W':
-				KEY( "WearFlags", obj->wear_flags, fread_number( fp ) );
-				KEY( "WearLoc", obj->wear_loc, fread_number( fp ) );
-				KEY( "Weight", obj->weight, fread_number( fp ) );
-				break;
+                if (!str_cmp(word, "Vnum"))
+                {
+                    int vnum;
+                    vnum = fread_number(fp);
 
-		}
+                    if ((obj->pIndexData = get_obj_index(vnum)) == NULL)
+                    {
+                        bug("Fread_obj: bad vnum %d.", vnum);
+                    }
+                    else
+                    {
+                        fVnum = true;
+                    }
 
-		if ( !fMatch ) {
-			bug( "Fread_obj: no match.", 0 );
-			fread_to_eol( fp );
-		}
-	}
+                    fMatch = true;
+                    break;
+                }
+
+                break;
+
+            case 'W':
+                KEY("WearFlags", obj->wear_flags, fread_number(fp));
+                KEY("WearLoc", obj->wear_loc, fread_number(fp));
+                KEY("Weight", obj->weight, fread_number(fp));
+                break;
+        }
+
+        if (!fMatch)
+        {
+            bug("Fread_obj: no match.", 0);
+            fread_to_eol(fp);
+        }
+    }
 }
